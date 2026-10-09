@@ -34,6 +34,11 @@ A scheduled GitHub Action ([update-epubcheck.yml](.github/workflows/update-epubc
 
 The manifest can also be refreshed manually with `scoop update` / `scoop status` after a release is published.
 
+## Development
+
+- `bin\checkver.ps1 epubcheck` — compare the manifest version with published releases (add `-Update` to rewrite it)
+- `bin\test.ps1` — run the official Scoop bucket test suite: manifest schema validation plus repository style checks (requires PowerShell Pester ≥ 5.2 and BuildHelpers)
+
 ## Disclaimer
 
 Unofficial packaging. EPUBCheck is developed by the [W3C](https://www.w3.org/); this bucket is not affiliated with or endorsed by the W3C or the Eclipse Adoptium project.
