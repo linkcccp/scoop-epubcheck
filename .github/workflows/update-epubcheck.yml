@@ -1,0 +1,286 @@
+name: update-epubcheck
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force rebuild even if versions are unchanged'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-epubcheck
+  cancel-in-progress: false
+
+env:
+  JRE_MAJOR: '21'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve versions
+        id: ver
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+
+          # Latest upstream EPUBCheck release
+          $ec = gh api repos/w3c/epubcheck/releases/latest | ConvertFrom-Json
+          if (-not $ec) { throw 'Failed to query w3c/epubcheck latest release' }
+          $ecVer = $ec.tag_name -replace '^[vV]', ''
+          $ecAsset = $ec.assets | Where-Object name -eq "epubcheck-$ecVer.zip"
+          if (-not $ecAsset) { throw "Asset epubcheck-$ecVer.zip not found in upstream release $($ec.tag_name)" }
+          $ecUrl = $ecAsset.browser_download_url
+          $ecDigest = "$($ecAsset.digest)"
+
+          # Latest Temurin JRE for the pinned major version
+          $jreApi = "https://api.adoptium.net/v3/assets/latest/$env:JRE_MAJOR/hotspot?architecture=x64&image_type=jre&os=windows&vendor=eclipse"
+          $ja = @(Invoke-RestMethod -Uri $jreApi)
+          if ($ja.Count -eq 0) { throw "No Temurin $env:JRE_MAJOR JRE found for windows x64" }
+          $jreUrl = $ja[0].binary.package.link
+          $jreSha = $ja[0].binary.package.checksum
+          $jreRel = $ja[0].release_name
+          $jreVer = ($jreRel -replace '^jdk-', '') -replace '\+.*$', ''
+
+          $ver = "$ecVer-jre$jreVer"
+          $current = (Get-Content bucket/epubcheck.json -Raw | ConvertFrom-Json).version
+          $force = ('${{ inputs.force }}' -eq 'true')
+          $skip = ($ver -eq $current) -and -not $force
+
+          Write-Host "EPUBCheck  : $ecVer (tag $($ec.tag_name))"
+          Write-Host "Temurin JRE: $jreVer (release $jreRel)"
+          Write-Host "Target     : $ver | manifest: $current$(if ($skip) { ' -> up to date, skipping' })"
+
+          function out([string]$k, [string]$v) {
+              [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "$k=$v`n")
+          }
+          out 'skip'      ($skip.ToString().ToLower())
+          out 'ver'       $ver
+          out 'ec_ver'    $ecVer
+          out 'ec_url'    $ecUrl
+          out 'ec_digest' $ecDigest
+          out 'jre_ver'   $jreVer
+          out 'jre_url'   $jreUrl
+          out 'jre_sha'   $jreSha
+
+      - name: Download and verify
+        if: steps.ver.outputs.skip != 'true'
+        id: dl
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+
+          $dl = Join-Path $env:RUNNER_TEMP 'dl'
+          New-Item -ItemType Directory -Force -Path $dl | Out-Null
+
+          $ecZip = Join-Path $dl 'epubcheck.zip'
+          Write-Host "Downloading ${{ steps.ver.outputs.ec_url }}"
+          Invoke-WebRequest -Uri '${{ steps.ver.outputs.ec_url }}' -OutFile $ecZip
+          $ecSha = (Get-FileHash $ecZip -Algorithm SHA256).Hash.ToLower()
+          $digest = '${{ steps.ver.outputs.ec_digest }}'
+          if ($digest -and $digest -ne "sha256:$ecSha") {
+              throw "EPUBCheck zip digest mismatch: upstream says $digest, downloaded sha256:$ecSha"
+          }
+          if ($digest) { Write-Host "epubcheck.zip sha256:$ecSha (matches upstream digest)" }
+          else { Write-Host "epubcheck.zip sha256:$ecSha (no upstream digest published, recorded)" }
+
+          $jreZip = Join-Path $dl 'jre.zip'
+          Write-Host "Downloading ${{ steps.ver.outputs.jre_url }}"
+          Invoke-WebRequest -Uri '${{ steps.ver.outputs.jre_url }}' -OutFile $jreZip
+          $jreSha = (Get-FileHash $jreZip -Algorithm SHA256).Hash.ToLower()
+          if ($jreSha -ne '${{ steps.ver.outputs.jre_sha }}') {
+              throw "Temurin JRE checksum mismatch: expected ${{ steps.ver.outputs.jre_sha }}, got $jreSha"
+          }
+          Write-Host "jre.zip sha256:$jreSha (verified against Adoptium checksum)"
+
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "ec_sha=$ecSha`n")
+
+      - name: Assemble bundle
+        if: steps.ver.outputs.skip != 'true'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+
+          $tmp = Join-Path $env:RUNNER_TEMP 'work'
+          $stage = Join-Path $env:RUNNER_TEMP 'stage'
+          foreach ($p in @($tmp, $stage)) {
+              if (Test-Path $p) { Remove-Item $p -Recurse -Force }
+              New-Item -ItemType Directory -Path $p | Out-Null
+          }
+
+          function Expand-Stripped([string]$zip, [string]$dest) {
+              $x = Join-Path $tmp ([IO.Path]::GetRandomFileName())
+              Expand-Archive -Path $zip -DestinationPath $x
+              $items = @(Get-ChildItem $x)
+              $src = if ($items.Count -eq 1 -and $items[0].PSIsContainer) { $items[0].FullName } else { $x }
+              New-Item -ItemType Directory -Force -Path $dest | Out-Null
+              Get-ChildItem $src -Force | ForEach-Object { Move-Item -LiteralPath $_.FullName -Destination $dest }
+          }
+
+          Expand-Stripped (Join-Path $env:RUNNER_TEMP 'dl\epubcheck.zip') $stage
+          Expand-Stripped (Join-Path $env:RUNNER_TEMP 'dl\jre.zip') (Join-Path $stage 'jre')
+
+          if (-not (Test-Path (Join-Path $stage 'epubcheck.jar'))) { throw 'epubcheck.jar missing after extraction' }
+          if (-not (Test-Path (Join-Path $stage 'lib'))) { throw 'lib\ directory missing after extraction' }
+          if (-not (Test-Path (Join-Path $stage 'jre\bin\java.exe'))) { throw 'jre\bin\java.exe missing after extraction' }
+
+          $wrapper = "@echo off`r`n`"%~dp0jre\bin\java.exe`" -jar `"%~dp0epubcheck.jar`" %*`r`n"
+          [IO.File]::WriteAllText((Join-Path $stage 'epubcheck.cmd'), $wrapper, [Text.Encoding]::ASCII)
+
+          Write-Host "Staged bundle:"
+          Get-ChildItem $stage | Select-Object Name, Length | Format-Table -AutoSize | Out-String | Write-Host
+
+      - name: Smoke test
+        if: steps.ver.outputs.skip != 'true'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+
+          $stage = Join-Path $env:RUNNER_TEMP 'stage'
+          $java = Join-Path $stage 'jre\bin\java.exe'
+          $jar = Join-Path $stage 'epubcheck.jar'
+          $ecVer = '${{ steps.ver.outputs.ec_ver }}'
+
+          $out = (& $java -jar $jar --version | Out-String).Trim()
+          Write-Host "--version -> [$out] (exit $LASTEXITCODE)"
+          if ($LASTEXITCODE -ne 0) { throw "epubcheck --version failed with exit code $LASTEXITCODE" }
+          if ($out -notlike "*$ecVer*") { throw "unexpected --version output: $out" }
+
+          $bad = Join-Path $env:RUNNER_TEMP 'broken.epub'
+          Set-Content -Path $bad -Value 'this is not a valid epub file' -Encoding Ascii
+          & $java -jar $jar $bad | Out-Host
+          Write-Host "invalid epub -> exit $LASTEXITCODE"
+          if ($LASTEXITCODE -eq 0) { throw 'epubcheck unexpectedly accepted an invalid epub' }
+
+          $wrapper = Join-Path $stage 'epubcheck.cmd'
+          cmd /c "`"$wrapper`" --version"
+          Write-Host "wrapper --version -> exit $LASTEXITCODE"
+          if ($LASTEXITCODE -ne 0) { throw "epubcheck.cmd wrapper failed with exit code $LASTEXITCODE" }
+
+      - name: Package
+        if: steps.ver.outputs.skip != 'true'
+        id: pkg
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ver = '${{ steps.ver.outputs.ver }}'
+          $stage = Join-Path $env:RUNNER_TEMP 'stage'
+          $zip = Join-Path $env:RUNNER_TEMP "epubcheck-$ver.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+
+          Add-Type -AssemblyName System.IO.Compression.ZipFile -ErrorAction SilentlyContinue
+          [IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip, [IO.Compression.CompressionLevel]::Optimal, $false)
+
+          $sha = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          $size = (Get-Item $zip).Length
+          Write-Host "epubcheck-$ver.zip  $size bytes  sha256:$sha"
+
+          $zipObj = [IO.Compression.ZipFile]::OpenRead($zip)
+          try { $entries = @($zipObj.Entries | ForEach-Object FullName) } finally { $zipObj.Dispose() }
+          if ($entries -notcontains 'epubcheck.cmd') { throw 'invalid zip layout: epubcheck.cmd not at zip root' }
+          if (-not ($entries -match '^jre[/\\]bin[/\\]java\.exe$')) { throw 'invalid zip layout: jre/bin/java.exe not found' }
+          if (-not ($entries -match '^epubcheck\.jar$')) { throw 'invalid zip layout: epubcheck.jar not at zip root' }
+          Write-Host "zip layout OK ($($entries.Count) entries, root-flat)"
+
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "zip=$zip`nsha=$sha`n")
+
+      - name: Publish release
+        if: steps.ver.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+
+          $ver = '${{ steps.ver.outputs.ver }}'
+          $ecVer = '${{ steps.ver.outputs.ec_ver }}'
+          $jreVer = '${{ steps.ver.outputs.jre_ver }}'
+          $zip = '${{ steps.pkg.outputs.zip }}'
+          $sha = '${{ steps.pkg.outputs.sha }}'
+          $repo = '${{ github.repository }}'
+          $tag = "v$ver"
+
+          $notes = @'
+          ## EPUBCheck {0} bundled with Eclipse Temurin {1} JRE (windows-x64)
+
+          - Upstream EPUBCheck: https://github.com/w3c/epubcheck/releases/tag/v{0}
+          - Bundled JRE: Eclipse Temurin {1} (Temurin {2}), https://adoptium.net/temurin/releases/?version={2}
+          - Zip layout (root): epubcheck.cmd, epubcheck.jar, lib/, jre/, licenses/, README.txt, CHANGELOG.txt, THIRD-PARTY.txt
+          - SHA256: {3}
+
+          Install with Scoop:
+
+              scoop bucket add scoop-epubcheck https://github.com/{4}
+              scoop install epubcheck
+          '@ -f $ecVer, $jreVer, $env:JRE_MAJOR, $sha, $repo
+
+          $notesFile = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          Set-Content -Path $notesFile -Value $notes -Encoding utf8NoBOM
+
+          if (gh release view $tag 2>$null) {
+              Write-Host "Release $tag already exists, refreshing assets and notes"
+              gh release upload $tag $zip --clobber
+              if ($LASTEXITCODE -ne 0) { throw "gh release upload failed (exit $LASTEXITCODE)" }
+              gh release edit $tag --notes-file $notesFile --latest
+              if ($LASTEXITCODE -ne 0) { throw "gh release edit failed (exit $LASTEXITCODE)" }
+          } else {
+              gh release create $tag $zip --title "EPUBCheck $ecVer (Temurin $jreVer JRE)" --notes-file $notesFile --latest
+              if ($LASTEXITCODE -ne 0) { throw "gh release create failed (exit $LASTEXITCODE)" }
+          }
+          Write-Host "Published https://github.com/$repo/releases/tag/$tag"
+
+      - name: Update manifest
+        if: steps.ver.outputs.skip != 'true'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ver = '${{ steps.ver.outputs.ver }}'
+          $sha = '${{ steps.pkg.outputs.sha }}'
+          $url = "https://github.com/${{ github.repository }}/releases/download/v$ver/epubcheck-$ver.zip"
+          $p = 'bucket/epubcheck.json'
+
+          $lines = Get-Content $p
+          $lines = $lines -replace '^(\s*"version":\s*")[^"]*(")', "`${1}$ver`${2}"
+          $lines = $lines -replace '^(\s*"url":\s*")[^"]*(")', "`${1}$url`${2}"
+          $lines = $lines -replace '^(\s*"hash":\s*")[^"]*(")', "`${1}sha256:$sha`${2}"
+          $lines | Set-Content $p -Encoding utf8NoBOM
+
+          $m = Get-Content $p -Raw | ConvertFrom-Json
+          if ($m.version -ne $ver) { throw "manifest version not updated (got $($m.version))" }
+          if ($m.url -ne $url) { throw 'manifest url not updated' }
+          if ($m.hash -ne "sha256:$sha") { throw 'manifest hash not updated' }
+          Write-Host "Manifest updated to $ver"
+          Get-Content $p | Write-Host
+
+      - name: Commit manifest
+        if: steps.ver.outputs.skip != 'true'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $ver = '${{ steps.ver.outputs.ver }}'
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add bucket/epubcheck.json
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+              Write-Host 'Manifest unchanged, nothing to commit'
+              exit 0
+          }
+          git commit -m "epubcheck: update to $ver"
+          if ($LASTEXITCODE -ne 0) { throw 'git commit failed' }
+          git push
+          if ($LASTEXITCODE -ne 0) { throw 'git push failed' }
