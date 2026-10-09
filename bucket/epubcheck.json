@@ -7,7 +7,7 @@
     "hash": "sha256:6767f0b844fe0ccb0718283cd6692d19bf1fad0748697ed0e8074dc7d4f9b43d",
     "bin": "epubcheck.cmd",
     "checkver": {
-        "github": "linkcccp/scoop-epubcheck",
+        "github": "https://github.com/linkcccp/scoop-epubcheck",
         "regex": "/releases/tag/v([\\d.]+-jre[\\d.]+)"
     },
     "autoupdate": {
