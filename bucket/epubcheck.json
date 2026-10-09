@@ -1,16 +1,16 @@
 {
-    "version": "0",
+    "version": "5.4.0-jre21.0.12.1",
     "description": "Official W3C EPUB conformance checker, bundled with a private Temurin 21 JRE (no system Java required).",
     "homepage": "https://github.com/w3c/epubcheck",
     "license": "BSD-3-Clause",
-    "url": "https://github.com/linkcccp/scoop-epubcheck/releases/download/v0/epubcheck-0.zip",
-    "hash": "",
+    "url": "https://github.com/linkcccp/scoop-epubcheck/releases/download/v5.4.0-jre21.0.12.1/epubcheck-5.4.0-jre21.0.12.1.zip",
+    "hash": "sha256:6767f0b844fe0ccb0718283cd6692d19bf1fad0748697ed0e8074dc7d4f9b43d",
     "bin": "epubcheck.cmd",
     "checkver": {
         "github": "linkcccp/scoop-epubcheck",
         "regex": "/releases/tag/v([\\d.]+-jre[\\d.]+)"
     },
     "autoupdate": {
-        "url": "https://github.com/linkcccp/scoop-epubcheck/releases/download/v$version/epubcheck-$version.zip"
+        "url": "https://github.com/linkcccp/scoop-epubcheck/releases/download/v5.4.0-jre21.0.12.1/epubcheck-5.4.0-jre21.0.12.1.zip"
     }
 }
