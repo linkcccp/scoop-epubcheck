@@ -1,12 +1,12 @@
 # scoop-epubcheck
 
-A [Scoop](https://scoop.sh) bucket providing a self-contained [EPUBCheck](https://github.com/w3c/epubcheck) package for Windows.
+A [Scoop](https://scoop.sh) bucket providing a self-contained [EPUBCheck](https://github.com/w3c/epubcheck) package for 64-bit Windows.
 
 Every release bundles everything needed to run EPUBCheck — no system Java, no configuration:
 
 - `epubcheck.cmd` — launcher (shim-friendly)
 - `epubcheck.jar` + `lib/` — EPUBCheck itself
-- `jre/` — private Eclipse Temurin JRE (Windows x64)
+- `jre/` — private Eclipse Temurin JRE (Windows x64 only; 32-bit Windows is not supported)
 - `licenses/`, `LICENSE.txt`, `THIRD-PARTY.txt` — upstream license files
 
 ## Install
