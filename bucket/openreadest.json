@@ -4,7 +4,7 @@
     "homepage": "https://github.com/luyishui/OpenReadest",
     "license": "AGPL-3.0",
     "url": "https://github.com/linkcccp/scoop-epubcheck/releases/download/openreadest-v0.9.100/openreadest-0.9.100.zip",
-    "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "hash": "sha256:e425f6f141e6df4f1054683350fbe4da342a362d15baa0e2903b6461ccb24b5e",
     "bin": "openreadest.exe",
     "shortcuts": [
         [
