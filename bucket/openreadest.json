@@ -13,7 +13,7 @@
         ]
     ],
     "checkver": {
-        "github": "https://github.com/linkcccp/scoop-epubcheck",
+        "url": "https://github.com/linkcccp/scoop-epubcheck/releases",
         "regex": "/releases/tag/openreadest-v([\\d.]+)"
     },
     "autoupdate": {
